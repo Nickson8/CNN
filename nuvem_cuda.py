@@ -3,6 +3,7 @@ import pickle
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 from predictor import Predictor
 
 
@@ -11,24 +12,24 @@ def printf(coisa):
     print(coisa)
     print("\n=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*\n")
 
-class CNN:
+class CNN(nn.Module):
     def __init__(self, ks, learning_rate):
+        super(CNN, self).__init__()
         self.ks = ks
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {torch.cuda.get_device_name(0)}({self.device})")
 
         # First Layer Kernels - convert to PyTorch tensors on GPU
-        self.l1_kernels = torch.randn(ks[0], 1, 3, 3, device=self.device) * 0.1
-        self.l1_kernels.requires_grad = True
+        self.kernels = nn.ParameterList()
+        self.kernels.append(nn.Parameter(torch.randn(ks[0], 1, 3, 3, device=self.device) * 0.1))
 
         # Second Layer Kernels
-        self.l2_kernels = torch.randn(ks[1], 1, 3, 3, device=self.device) * 0.1
-        self.l2_kernels.requires_grad = True
+        self.kernels.append(nn.Parameter(torch.randn(ks[1], 1, 3, 3, device=self.device) * 0.1))
 
         # Third Layer Kernels
-        self.l3_kernels = torch.randn(ks[2], 1, 3, 3,
-                                      device=self.device) * 0.1
-        self.l3_kernels.requires_grad = True
+        self.kernels.append(nn.Parameter(torch.randn(ks[2], 1, 3, 3, device=self.device) * 0.1))
+
+        self.kernels_optmizer = torch.optim.SGD(self.parameters(), lr=learning_rate)
 
         # Learning rate
         self.learning_rate = learning_rate
@@ -134,7 +135,7 @@ class CNN:
 
         # First Layer - Convolution + ReLU + Pooling
         # Use PyTorch's built-in Conv2d function for parallel computation
-        l1_outputs = F.relu(torch.conv2d(input=batch_X, weight=self.l1_kernels, stride=1, padding=0))
+        l1_outputs = F.relu(torch.conv2d(input=batch_X, weight=self.kernels[0], stride=1, padding=0))
         l1_pooled = F.max_pool2d(l1_outputs, kernel_size=2, stride=2)
 
         # Second Layer
@@ -142,7 +143,7 @@ class CNN:
         batch_l1 = l1_pooled.view(batch_size , self.ks[0],
                                   l1_pooled.shape[2], l1_pooled.shape[3])
         
-        l2_outputs = F.relu(F.conv2d(input=batch_l1, weight=self.l2_kernels.repeat(self.ks[0],1,1,1),
+        l2_outputs = F.relu(F.conv2d(input=batch_l1, weight=self.kernels[1].repeat(self.ks[0],1,1,1),
             padding=0, groups=self.ks[0]))
         l2_pooled = F.max_pool2d(l2_outputs, kernel_size=2, stride=2)
 
@@ -150,7 +151,7 @@ class CNN:
         batch_l2 = l2_pooled.view(batch_size, self.ks[0] * self.ks[1],
                                   l2_pooled.shape[2], l2_pooled.shape[3])
 
-        l3_outputs = F.relu(F.conv2d(input=batch_l2, weight=self.l3_kernels.repeat(self.ks[0]*self.ks[1],1,1,1), padding=0,
+        l3_outputs = F.relu(F.conv2d(input=batch_l2, weight=self.kernels[2].repeat(self.ks[0]*self.ks[1],1,1,1), padding=0,
                                      groups=self.ks[0] * self.ks[1]))
         l3_pooled = F.max_pool2d(l3_outputs, kernel_size=2, stride=2)
 
@@ -181,7 +182,6 @@ class CNN:
         Backward pass for a batch using automatic differentiation
 
         Args:
-            batch_X: Batch of input images
             batch_Y: Batch of true labels
             predictions: Batch of predicted probabilities
         """
@@ -189,23 +189,15 @@ class CNN:
         loss = self.cross_entropy_loss_batch(batch_Y, predictions)
 
         # Zero all gradients
-        if self.l1_kernels.grad is not None:
-            self.l1_kernels.grad.zero_()
-        if self.l2_kernels.grad is not None:
-            self.l2_kernels.grad.zero_()
-        if self.l3_kernels.grad is not None:
-            self.l3_kernels.grad.zero_()
+        self.kernels_optmizer.zero_grad()
         self.pred_optimizer.zero_grad()
 
         # Backward pass - compute gradients
         loss.backward()
 
         # Update parameters using gradient descent
-        with torch.no_grad():
-            self.l1_kernels -= self.learning_rate * self.l1_kernels.grad
-            self.l2_kernels -= self.learning_rate * self.l2_kernels.grad
-            self.l3_kernels -= self.learning_rate * self.l3_kernels.grad
-            self.pred_optimizer.step()
+        self.kernels_optmizer.step()
+        self.pred_optimizer.step()
 
     def predict_batch(self, batch_X):
         """
@@ -317,64 +309,6 @@ class CNN:
         plt.tight_layout()
         plt.show()
 
-    def visualize_filters(self, layer=1):
-        """
-        Visualize filters from a specific layer
-
-        Args:
-            layer: Layer number (1, 2, or 3)
-        """
-        if layer == 1:
-            kernels = self.l1_kernels.detach().cpu().numpy()
-            title = "First Layer Filters"
-        elif layer == 2:
-            # Reshape to visualize individual filters
-            kernels = self.l2_kernels.detach().cpu().numpy()
-            kernels = kernels.reshape(-1, 3, 3)
-            title = "Second Layer Filters (Sample)"
-        elif layer == 3:
-            # Reshape to visualize individual filters
-            kernels = self.l3_kernels.detach().cpu().numpy()
-            kernels = kernels.reshape(-1, 3, 3)
-            title = "Third Layer Filters (Sample)"
-        else:
-            raise ValueError("Layer must be 1, 2, or 3")
-
-        # Select a subset of kernels to display
-        if kernels.shape[0] > 16:
-            kernels = kernels[:16]
-
-        n_kernels = kernels.shape[0]
-        n_cols = min(8, n_kernels)
-        n_rows = (n_kernels + n_cols - 1) // n_cols
-
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 2, n_rows * 2))
-        axes = axes.flatten() if n_rows > 1 or n_cols > 1 else [axes]
-
-        for i in range(n_kernels):
-            # Normalize kernel for visualization
-            kernel = kernels[i]
-            if layer == 1:
-                kernel = kernel[0]  # Extract the channel
-            kernel_min = kernel.min()
-            kernel_max = kernel.max()
-            if kernel_max > kernel_min:
-                kernel_normalized = (kernel - kernel_min) / (kernel_max - kernel_min)
-            else:
-                kernel_normalized = kernel
-
-            axes[i].imshow(kernel_normalized, cmap='viridis')
-            axes[i].set_title(f"Filter {i + 1}")
-            axes[i].axis('off')
-
-        # Hide any unused subplots
-        for i in range(n_kernels, len(axes)):
-            axes[i].axis('off')
-
-        plt.suptitle(title)
-        plt.tight_layout()
-        plt.show()
-
 
 def preprocess_mnist_data():
     """
@@ -415,8 +349,8 @@ def main():
     x_train, y_train, x_test, y_test = preprocess_mnist_data()
 
     # Use a smaller subset for faster training and demonstration
-    train_samples = 60000  # Adjust this number as needed
-    test_samples = 1000  # Adjust this number as needed
+    train_samples = 40000  # Adjust this number as needed
+    test_samples = 5000  # Adjust this number as needed
 
     x_train_subset = x_train[:train_samples]
     y_train_subset = y_train[:train_samples]
@@ -449,19 +383,19 @@ def main():
     # cnn.visualize_filters(layer=1)
 
     # Make predictions on a few examples
-    print("\nPredictions on sample images:")
-    for i in range(5):
-        class_prediction, confidence = cnn.predict(x_test_subset[i])
-        true_class = np.argmax(y_test_subset[i])
-        print(
-            f"Sample {i + 1}: Predicted {class_prediction} with confidence {confidence:.4f}, True class: {true_class}")
+    #print("\nPredictions on sample images:")
+    #for i in range(5):
+        #class_prediction, confidence = cnn.predict(x_test_subset[i])
+        #true_class = np.argmax(y_test_subset[i])
+        #print(
+            #f"Sample {i + 1}: Predicted {class_prediction} with confidence {confidence:.4f}, True class: {true_class}")
 
         # Display the image
-        plt.figure(figsize=(5,5))
-        plt.imshow(x_test_subset[i], cmap='gray')
-        plt.title(f"Prediction: {class_prediction}\nTrue: {true_class}")
-        plt.axis('off')
-        plt.show()
+        #plt.figure(figsize=(5,5))
+        #plt.imshow(x_test_subset[i], cmap='gray')
+        #plt.title(f"Prediction: {class_prediction}\nTrue: {true_class}")
+        #plt.axis('off')
+        #plt.show()
 
 
 if __name__ == "__main__":
