@@ -3,6 +3,7 @@ import pickle
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
+from predictor import Predictor
 
 
 def printf(coisa):
@@ -11,7 +12,7 @@ def printf(coisa):
     print("\n=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*\n")
 
 class CNN:
-    def __init__(self, ks):
+    def __init__(self, ks, learning_rate):
         self.ks = ks
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {torch.cuda.get_device_name(0)}({self.device})")
@@ -29,15 +30,15 @@ class CNN:
                                       device=self.device) * 0.1
         self.l3_kernels.requires_grad = True
 
+        # Learning rate
+        self.learning_rate = learning_rate
+
         # Prediction Layer Weights
         n = ks[0] * ks[1] * ks[2]
-        self.pw = torch.randn(n, 10, device=self.device) * 0.1
-        self.pw.requires_grad = True
+        self.predictor = Predictor(layers_sizes=[10], input_size=n, lr=0.01, device=self.device)
+        self.pred_optimizer = self.predictor.get_optimizer()
 
-        # Learning rate
-        self.learning_rate = 0.01
-
-    def fit(self, Imgs, Y, epochs=10, batch_size=32, learning_rate=0.01, validation_data=None):
+    def fit(self, Imgs, Y, epochs=10, batch_size=32, validation_data=None):
         """
         Train the CNN model using CUDA parallelization
 
@@ -49,7 +50,6 @@ class CNN:
             learning_rate: Learning rate for gradient descent
             validation_data: Tuple of (validation_images, validation_labels)
         """
-        self.learning_rate = learning_rate
         num_samples = len(Imgs)
 
         # Convert data to PyTorch tensors
@@ -82,7 +82,7 @@ class CNN:
                 batch_Y = Y_shuffled[i:end]
 
                 # Forward pass (all samples in batch at once)
-                features, predictions = self.forward_batch(batch_X)
+                predictions = self.forward_batch(batch_X)
 
                 # Calculate loss
                 loss = self.cross_entropy_loss_batch(batch_Y, predictions)
@@ -94,7 +94,7 @@ class CNN:
                 correct += (pred_classes == true_classes).sum().item()
 
                 # Backward pass (computes gradients for all samples in parallel)
-                self.backward_batch(batch_X, batch_Y, features, predictions)
+                self.backward_batch(batch_Y, predictions)
 
             # Epoch statistics
             avg_train_loss = total_loss / num_samples
@@ -158,10 +158,9 @@ class CNN:
         features = l3_pooled.view(batch_size, -1)
 
         # Prediction layer
-        Z = torch.matmul(features, self.pw)
-        predictions = F.softmax(Z, dim=1)
+        predictions = self.predictor.forward(features)
 
-        return features, predictions
+        return predictions
 
     def cross_entropy_loss_batch(self, y_true, y_pred):
         """
@@ -177,14 +176,13 @@ class CNN:
         # PyTorch's cross entropy is more numerically stable
         return F.binary_cross_entropy(y_pred, y_true, reduction='sum') / y_true.shape[0]
 
-    def backward_batch(self, batch_X, batch_Y, features, predictions):
+    def backward_batch(self, batch_Y, predictions):
         """
         Backward pass for a batch using automatic differentiation
 
         Args:
             batch_X: Batch of input images
             batch_Y: Batch of true labels
-            features: Batch of flattened features
             predictions: Batch of predicted probabilities
         """
         # Calculate loss
@@ -197,8 +195,7 @@ class CNN:
             self.l2_kernels.grad.zero_()
         if self.l3_kernels.grad is not None:
             self.l3_kernels.grad.zero_()
-        if self.pw.grad is not None:
-            self.pw.grad.zero_()
+        self.pred_optimizer.zero_grad()
 
         # Backward pass - compute gradients
         loss.backward()
@@ -208,7 +205,7 @@ class CNN:
             self.l1_kernels -= self.learning_rate * self.l1_kernels.grad
             self.l2_kernels -= self.learning_rate * self.l2_kernels.grad
             self.l3_kernels -= self.learning_rate * self.l3_kernels.grad
-            self.pw -= self.learning_rate * self.pw.grad
+            self.pred_optimizer.step()
 
     def predict_batch(self, batch_X):
         """
@@ -222,7 +219,7 @@ class CNN:
             confidences: Tensor of confidence scores
         """
         with torch.no_grad():
-            _, predictions = self.forward_batch(batch_X)
+            predictions = self.forward_batch(batch_X)
             predicted_classes = torch.argmax(predictions, dim=1)
             confidences = torch.gather(predictions, 1, predicted_classes.unsqueeze(1)).squeeze()
 
@@ -241,7 +238,7 @@ class CNN:
             loss: Average cross entropy loss
         """
         with torch.no_grad():
-            features, predictions = self.forward_batch(test_X)
+            predictions = self.forward_batch(test_X)
             loss = self.cross_entropy_loss_batch(test_Y, predictions).item()
 
             pred_classes = torch.argmax(predictions, dim=1)
@@ -427,16 +424,15 @@ def main():
     y_test_subset = y_test[:test_samples]
 
     # Initialize CNN model
-    cnn = CNN(ks=[4, 4, 4])  # 4 kernels in each layer
+    cnn = CNN(ks=[4, 4, 4], learning_rate=0.01)  # 4 kernels in each layer
 
     # Train the model
     print("Training the model...")
     history = cnn.fit(
         x_train_subset,
         y_train_subset,
-        epochs=20,
+        epochs=15,
         batch_size=16,
-        learning_rate=0.01,
         validation_data=(x_test_subset, y_test_subset)
     )
 
