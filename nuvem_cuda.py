@@ -85,9 +85,6 @@ class CNN(nn.Module):
                 # Forward pass (all samples in batch at once)
                 predictions = self.forward_batch(batch_X)
 
-                # Calculate loss
-                loss = self.cross_entropy_loss_batch(batch_Y, predictions)
-                total_loss += loss.item() * (end - i)
 
                 # Calculate accuracy
                 pred_classes = torch.argmax(predictions, dim=1)
@@ -95,7 +92,8 @@ class CNN(nn.Module):
                 correct += (pred_classes == true_classes).sum().item()
 
                 # Backward pass (computes gradients for all samples in parallel)
-                self.backward_batch(batch_Y, predictions)
+                loss = self.backward_batch(batch_Y, predictions)
+                total_loss += loss.item() * (end - i)
 
             # Epoch statistics
             avg_train_loss = total_loss / num_samples
@@ -198,6 +196,8 @@ class CNN(nn.Module):
         # Update parameters using gradient descent
         self.kernels_optmizer.step()
         self.pred_optimizer.step()
+
+        return loss
 
     def predict_batch(self, batch_X):
         """
@@ -349,7 +349,7 @@ def main():
     x_train, y_train, x_test, y_test = preprocess_mnist_data()
 
     # Use a smaller subset for faster training and demonstration
-    train_samples = 40000  # Adjust this number as needed
+    train_samples = 60000  # Adjust this number as needed
     test_samples = 5000  # Adjust this number as needed
 
     x_train_subset = x_train[:train_samples]
@@ -358,7 +358,7 @@ def main():
     y_test_subset = y_test[:test_samples]
 
     # Initialize CNN model
-    cnn = CNN(ks=[4, 4, 4], learning_rate=0.01)  # 4 kernels in each layer
+    cnn = CNN(ks=[8, 6, 6], learning_rate=0.01)  # 4 kernels in each layer
 
     # Train the model
     print("Training the model...")
@@ -366,7 +366,7 @@ def main():
         x_train_subset,
         y_train_subset,
         epochs=15,
-        batch_size=16,
+        batch_size=32,
         validation_data=(x_test_subset, y_test_subset)
     )
 

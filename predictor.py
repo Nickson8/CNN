@@ -26,8 +26,8 @@ class Predictor(nn.Module):
                 ))
 
     def forward(self, X):  # Fixed method name from 'foward' to 'forward'
-        X = torch.cat((X, torch.ones((X.shape[0], 1), device=self.device)), dim=1)
-        Resp = X
+        Xz = torch.cat((X, torch.ones((X.shape[0], 1), device=self.device)), dim=1)
+        Resp = Xz
         for layer in self.Layers:
             R = torch.matmul(Resp, layer)
             Resp = torch.cat((R, torch.ones((R.shape[0], 1), device=self.device)), dim=1)
